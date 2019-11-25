@@ -296,6 +296,8 @@ namespace realsense2_camera
         std::map<rs2_stream, int> _unit_step_size;
         std::map<stream_index_pair, sensor_msgs::CameraInfo> _camera_info;
         std::atomic_bool _is_initialized_time_base;
+        std::atomic_int _timestamp_sample_count;
+        int _timestamp_goal_count;
         double _camera_time_base;
         std::map<stream_index_pair, std::vector<rs2::stream_profile>> _enabled_profiles;
 

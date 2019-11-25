@@ -84,6 +84,8 @@ BaseRealSenseNode::BaseRealSenseNode(ros::NodeHandle& nodeHandle,
     _pnh(privateNodeHandle), _dev(dev), _json_file_path(""),
     _serial_no(serial_no),
     _is_initialized_time_base(false),
+    _timestamp_sample_count(0),
+    _timestamp_goal_count(100),  //FIXME: This count should be read from a parameter
     _namespace(getNamespaceStr())
 {
     // Types for depth stream
@@ -1268,6 +1270,11 @@ void BaseRealSenseNode::imu_callback_sync(rs2::frame frame, imu_sync_method sync
         double frame_time = frame.get_timestamp();
 
         bool placeholder_false(false);
+        if (_timestamp_sample_count < _timestamp_goal_count) {
+            setBaseTime(frame_time, RS2_TIMESTAMP_DOMAIN_SYSTEM_TIME == frame.get_frame_timestamp_domain());
+            continue;
+        }
+
         if (_is_initialized_time_base.compare_exchange_strong(placeholder_false, true) )
         {
             setBaseTime(frame_time, RS2_TIMESTAMP_DOMAIN_SYSTEM_TIME == frame.get_frame_timestamp_domain());
@@ -1333,6 +1340,14 @@ void BaseRealSenseNode::imu_callback(rs2::frame frame)
     auto stream = frame.get_profile().stream_type();
     double frame_time = frame.get_timestamp();
     bool placeholder_false(false);
+
+
+    if (_timestamp_sample_count < _timestamp_goal_count) {
+        setBaseTime(frame_time, RS2_TIMESTAMP_DOMAIN_SYSTEM_TIME == frame.get_frame_timestamp_domain());
+        return;
+    }
+
+
     if (_is_initialized_time_base.compare_exchange_strong(placeholder_false, true) )
     {
         setBaseTime(frame_time, RS2_TIMESTAMP_DOMAIN_SYSTEM_TIME == frame.get_frame_timestamp_domain());
@@ -1384,6 +1399,12 @@ void BaseRealSenseNode::pose_callback(rs2::frame frame)
 {
     double frame_time = frame.get_timestamp();
     bool placeholder_false(false);
+
+    if (_timestamp_sample_count < _timestamp_goal_count) {
+        setBaseTime(frame_time, RS2_TIMESTAMP_DOMAIN_SYSTEM_TIME == frame.get_frame_timestamp_domain());
+        return;
+    }
+
     if (_is_initialized_time_base.compare_exchange_strong(placeholder_false, true) )
     {
         setBaseTime(frame_time, RS2_TIMESTAMP_DOMAIN_SYSTEM_TIME == frame.get_frame_timestamp_domain());
@@ -1484,6 +1505,12 @@ void BaseRealSenseNode::frame_callback(rs2::frame frame)
         // and the incremental timestamp from the camera.
         // In sync mode the timestamp is based on ROS time
         bool placeholder_false(false);
+
+        if (_timestamp_sample_count < _timestamp_goal_count) {
+            setBaseTime(frame_time, RS2_TIMESTAMP_DOMAIN_SYSTEM_TIME == frame.get_frame_timestamp_domain());
+            return;
+        }
+
         if (_is_initialized_time_base.compare_exchange_strong(placeholder_false, true) )
         {
             setBaseTime(frame_time, RS2_TIMESTAMP_DOMAIN_SYSTEM_TIME == frame.get_frame_timestamp_domain());
@@ -1671,8 +1698,30 @@ void BaseRealSenseNode::setBaseTime(double frame_time, bool warn_no_metadata)
 {
     ROS_WARN_COND(warn_no_metadata, "Frame metadata isn't available! (frame_timestamp_domain = RS2_TIMESTAMP_DOMAIN_SYSTEM_TIME)");
 
-    _ros_time_base = ros::Time::now();
-    _camera_time_base = frame_time;
+    static std::vector<ros::Time> times;
+    static std::vector<double> camera_times;
+
+    times.push_back(ros::Time::now());
+    camera_times.push_back(frame_time);
+    _timestamp_sample_count++;
+
+    uint64_t avg_time(0);
+    for (unsigned int i=0; i < times.size(); ++i) {
+        avg_time += times[i].toNSec() / times.size();
+    }
+
+    ros::Time ros_avg_time;
+    _ros_time_base = ros_avg_time.fromNSec(avg_time);
+
+    //FIXME: This offset should be read from a parameter
+    _ros_time_base = _ros_time_base - ros::Duration(0, 10* 1000000); //Add 10ms transmission time
+
+    double camera_avg_time(0);
+    for (unsigned int i=0; i < camera_times.size(); ++i) {
+        camera_avg_time += camera_times[i] / camera_times.size();
+    }
+
+    _camera_time_base = camera_avg_time;
 }
 
 void BaseRealSenseNode::setupStreams()
